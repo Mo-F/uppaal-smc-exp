@@ -1,0 +1,213 @@
+/*/
+ * Copyright (c) 2014-2017 LAAS/CNRS
+ * All rights reserved.
+ *
+ * Redistribution and use  in source  and binary  forms,  with or without
+ * modification, are permitted provided that the following conditions are
+ * met:
+ *
+ *   1. Redistributions of  source  code must retain the  above copyright
+ *      notice and this list of conditions.
+ *   2. Redistributions in binary form must reproduce the above copyright
+ *      notice and  this list of  conditions in the  documentation and/or
+ *      other materials provided with the distribution.
+ *
+ *					Anthony Mallet on Tue Feb 18 2014
+ */
+#pragma require "openrobots-idl >= 1.1"
+
+#include "or/pose/pose_estimator.gen"
+
+component optitrack {
+  version	"1.6.1";
+  email		"openrobots@laas.fr";
+  lang		"c";
+  require	"genom3 >= 2.99.26";
+  provides	or_pose_estimator;
+
+  exception e_nomem, e_connection, e_timeout;
+  exception e_addrinfo { string<256> what; };
+  exception e_network { string<256> what; };
+  exception e_access { string<256> what; };
+  exception e_publish;
+
+  struct marker_pos { double x, y, z; };
+  struct marker_set {
+    or::time::ts ts;	/* timestamp */
+    sequence<marker_pos> markers;
+  };
+
+  port multiple out or_pose_estimator::state bodies;
+  port multiple out marker_set markers;
+
+  native server_s;
+  native bodies_info_s;
+  native log_s;
+
+  ids {
+    struct pubdata_s {
+      boolean bodies, markers, anon;
+    } pubdata;
+
+    unsigned short local_port;
+    server_s server;
+    bodies_info_s binfo;
+
+    struct bw_s {
+      double cur, avg;
+      or::time::ts ts;
+    } bw;
+
+    struct ping_ctx {
+      long id;
+      string<64> response;
+    } ping;
+
+    struct noise_s {
+      double pstddev, qstddev;
+    } noise;
+
+    string<256> logfile;
+    log_s log;
+  };
+/*
+  attribute get_export(out pubdata);
+  attribute set_export(in pubdata = {
+      .bodies = TRUE : "Rigid bodies",
+      .markers = FALSE : "Individual rigid body markers",
+      .anon = FALSE : "Anonymous markers"
+    } :"Exported data") {
+    validate set_export_validate(out binfo);
+  };
+
+  attribute get_local_port(out local_port);
+  attribute set_local_port(in local_port = 1510	:"local IP port for listening");
+
+  attribute get_noise(out noise);
+  attribute set_noise(in noise = {
+      .pstddev = 0. : "Position white noise standard deviation",
+      .qstddev = 0. : "Orientation white noise standard deviation"
+    });
+
+  attribute get_bw(out bw.cur =:"Current bandwidth usage, in MB/s",
+                   out bw.avg = :"Average bandwidth usage over the last "
+                                 "minute, in MB/s");*/
+
+
+  /* --- tasks ------------------------------------------------------------- */
+
+  task publish {
+  period 4 ms;
+    codel<start> opti_publish_start(out ::ids)
+      yield pause::descr wcet 0.01 ms;
+
+    codel<descr> opti_publish_descr(inout server)
+      yield pause::descr, recv, disconnect wcet 0.5 ms;
+
+    async codel<recv> opti_publish_recv(in server)
+      yield command, data, pause::recv, disconnect, pause::descr wcet 0.5 ms;
+
+    codel<command> opti_publish_command(inout server, inout bw, inout ping,
+                                        inout binfo, in log, in pubdata,
+                                        in noise, out bodies, out markers)
+      yield pause::descr, pause::recv, disconnect wcet 0.5 ms;
+
+    codel<data> opti_publish_data(inout server, inout bw, inout binfo, in log,
+                                  in pubdata, in noise, out bodies, out markers)
+      yield pause::descr, pause::recv wcet 1 ms;
+
+    codel<disconnect> opti_publish_disconnect(inout server)
+      yield pause::descr wcet 1 ms;
+
+  /*  codel<stop> opti_publish_stop(inout server, out binfo)
+      yield ether;*/
+
+    throw e_nomem;
+  };
+
+
+  /* --- commands ---------------------------------------------------------- */
+/*
+  activity ping(
+    out double rtt =			:"Round trip time",
+    out string<64> info =		:"Server information") {
+    doc		"Ping the server";
+    task	publish;
+    local long id, retries;
+    local double ts;
+
+    codel<start>
+      opti_ping_start(in server, in ping, out id, out ts, out retries)
+      yield send;
+    codel<send>
+      opti_ping_send(in server)
+      yield pause::sleep;
+    codel<sleep>
+      opti_ping_sleep(in ping, in id, inout retries)
+      yield send, stop;
+    codel<stop>
+      opti_ping_stop(in ping, in ts, out rtt, out info)
+      yield ether;
+
+    throw e_connection, e_timeout, e_network;
+  };
+
+  function refresh() {
+    doc	"Refetch rigid body names";
+    codel refresh(out binfo);
+
+    throw e_connection;
+  };
+
+  function body_list(out sequence< string<64> > body_list) {
+    doc	"Return the list of available bodies";
+    codel opti_body_list(in binfo, out body_list);
+
+    throw e_nomem;
+  };
+
+  activity connect(
+    in string<128> host = "localhost"		:"Server host name",
+    in string<128> host_port = "1510"		:"Command port",
+    in string<128> mcast = "239.255.42.99"	:"Multicast source address",
+    in string<128> mcast_port = "1511"		:"Data port") {
+    doc		"Export live marker data";
+    task	publish;
+
+    codel<start>
+      opti_connect_start(in local_port, in host, in host_port,
+                         in mcast, in mcast_port, out server)
+      yield ether;
+
+    throw e_addrinfo, e_nomem;
+  };
+
+  activity disconnect() {
+    doc		"Stop exporting live marker data";
+    task	publish;
+
+    codel<start> opti_disconnect(inout server)
+      yield ether;
+  };*/
+
+
+  /* --- logging ----------------------------------------------------------- */
+/*
+  attribute get_logfile(out logfile) {
+    doc		"Get the log file name";
+  };
+
+  attribute set_logfile(
+    in logfile = "optitrack-%F-%T.log" : "File name in strftime(3) format") {
+    doc		"Define the log file name";
+    validate set_logfile(local in logfile, out log);
+
+    throw e_access;
+  };
+
+  function unset_logfile() {
+    doc		"Stop logging";
+    codel unset_logfile(out log);
+  };*/
+
+};

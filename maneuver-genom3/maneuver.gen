@@ -1,0 +1,221 @@
+/*/
+ * Copyright (c) 2016-2017 LAAS/CNRS
+ * All rights reserved.
+ *
+ * Redistribution and use  in source  and binary  forms,  with or without
+ * modification, are permitted provided that the following conditions are
+ * met:
+ *
+ *   1. Redistributions of  source  code must retain the  above copyright
+ *      notice and this list of conditions.
+ *   2. Redistributions in binary form must reproduce the above copyright
+ *      notice and  this list of  conditions in the  documentation and/or
+ *      other materials provided with the distribution.
+ *
+ *                                      Anthony Mallet on Mon Aug 22 2016
+ */
+#pragma require "openrobots-idl >= 1.2"
+
+#include "or/pose/pose_estimator.gen"
+
+component maneuver {
+  version		"1.2";
+  email			"openrobots@laas.fr";
+  lang			"c";
+  codels-require	"libkdtp";
+
+  uses		or_pose_estimator;
+
+  port in	or_pose_estimator::state state;
+  port out	or_pose_estimator::state reference;
+
+  exception e_nostate;
+  exception e_sys { short code; string<128> what; };
+
+  native planner_s;
+  native log_s;
+
+  ids {
+    planner_s planner;
+
+    or_pose_estimator::state start;
+    struct trajectory_s {
+      sequence<or_pose_estimator::state> t;
+      unsigned long i;
+    } trajectory;
+
+    /* logging */
+    log_s log;
+  };
+
+  const unsigned short control_period_ms = 5;
+
+  function set_bounds(in double xmin, in double xmax,
+                      in double ymin, in double ymax,
+                      in double zmin, in double zmax,
+                      in double yawmin, in double yawmax) {
+    codel mv_set_bounds(inout planner,
+                        in xmin, in xmax, in ymin, in ymax, in zmin, in zmax,
+                        in yawmin, in yawmax) wcet 0.01 ms;
+
+  }; /*
+  function set_velocity(in double v, in double w) {
+    codel mv_set_velocity(inout planner, in v, in w);
+  };
+  function set_acceleration(in double a, in double dw) {
+    codel mv_set_acceleration(inout planner, in a, in dw);
+  };
+  function set_jerk(in double j, in double ddw) {
+    codel mv_set_jerk(inout planner, in j, in ddw);
+  };
+  function set_snap(in double s, in double dddw) {
+    codel mv_set_snap(inout planner, in s, in dddw);
+  };
+
+  function get_limits(out double xmin, out double xmax,
+                      out double ymin, out double ymax,
+                      out double zmin, out double zmax,
+                      out double yawmin, out double yawmax,
+                      out double v, out double w,
+                      out double a, out double dw,
+                      out double j, out double ddw,
+                      out double s, out double dddw) {
+    codel mv_get_limits(inout planner,
+                        out xmin, out xmax,
+                        out ymin, out ymax,
+                        out zmin, out zmax,
+                        out yawmin, out yawmax,
+                        out v, out w,
+                        out a, out dw,
+                        out j, out ddw,
+                        out s, out dddw);
+  };*/
+
+
+  /* --- planning ---------------------------------------------------------- */
+
+  task plan {
+    period 5 ms;
+    codel<start> mv_plan_start(out ::ids) yield ether wcet 0.03 ms;
+   /* codel<stop> mv_plan_stop(inout ::ids) yield ether;*/
+  };
+
+  activity set_current_state() {
+    doc		"Set initial planning position to current one";
+    task	plan;
+
+    codel<start> mv_current_state_start(in state, out start)
+      yield ether wcet 0.02 ms;
+  };
+
+  activity take_off(in double height, in double duration) {
+    doc		"Vertical take-off from current state";
+    task	plan;
+
+    local sequence<or_pose_estimator::state> path;
+
+    codel<start> mv_take_off_plan(in planner, inout start, in height, in duration, out path)
+      yield exec wcet 2 ms;
+    codel<exec> mv_plan_exec(in planner, in path, inout trajectory)
+      yield pause::exec, wait wcet 1 ms;
+    codel<wait> mv_plan_exec_wait(in trajectory)
+      yield pause::wait, ether wcet 0.01 ms;
+
+    codel<stop> mv_plan_exec_stop(out trajectory)
+      yield ether wcet 0.01 ms;
+
+    throw e_nostate;
+    interrupt take_off;
+  };
+
+ /* activity goto(in double x, in double y, in double z, in double yaw, in double duration) {
+    doc		"Reach a given position from current state";
+    task	plan;
+
+    local sequence<or_pose_estimator::state> path;
+
+    codel<start> mv_goto_plan(in planner, inout start,
+                              in x, in y, in z, in yaw, in duration, out path)
+      yield exec;
+    codel<exec> mv_plan_exec(in planner, in path, inout trajectory)
+      yield pause::exec, wait;
+    codel<wait> mv_plan_exec_wait(in trajectory)
+      yield pause::wait, ether;
+
+    codel<stop> mv_plan_exec_stop(out trajectory)
+      yield ether;
+
+    throw e_nostate;
+    interrupt take_off, goto;
+  };
+*/
+  activity waypoint(in double x, in double y, in double z, in double yaw,
+                    in double vx, in double vy, in double vz, in double wz,
+                    in double ax, in double ay, in double az, in double duration) {
+    doc		"Push a given position to reach after last one";
+    task	plan;
+
+    local sequence<or_pose_estimator::state> path;
+
+    codel<start> mv_waypoint_plan(in planner, inout start,
+                                  in x, in y, in z, in yaw,
+                                  in vx, in vy, in vz, in wz,
+                                  in ax, in ay, in az,
+                                  in duration,
+                                  out path)
+      yield exec wcet 3 ms;
+    codel<exec> mv_waypoint_add(in planner, in path, inout trajectory)
+      yield ether wcet 1 ms;
+
+    throw e_nostate;
+    interrupt waypoint;
+  };
+
+  activity wait() {
+    doc		"Wait until last waypoint/goto point is reached";
+    task	plan;
+
+    codel<start> mv_plan_exec_wait(in trajectory)
+      yield pause::start, ether wcet 0.01 ms;
+  };
+
+
+  /* --- execution --------------------------------------------------------- */
+
+  task exec {
+    period control_period_ms ms;
+
+    codel<start> mv_exec_start(out reference, out trajectory)
+      yield wait wcet 0.01 ms;
+    codel<wait> mv_exec_wait(in state, in trajectory)
+      yield pause::wait, main wcet 0.02 ms;
+    codel<main> mv_exec_main(in state, inout trajectory, out reference, in log)
+      yield wait, pause::main/*, start*/ wcet 0.05 ms;
+
+  /*  codel<stop> mv_exec_stop() yield ether wcet 0.01 ms;*/
+  };
+/*
+  activity reset() {
+    doc		"Reset the current trajectory and set desired state to empty";
+    task	exec;
+
+    codel<start> mv_exec_reset(inout trajectory, out reference) yield ether;
+  };*/
+
+
+  /* --- logging ----------------------------------------------------------- */
+/*
+  function log(in string<64> path = "/tmp/maneuver.log": "Log file name") {
+    doc		"Log state";
+
+    codel mv_log(in path, inout log);
+
+    throw e_sys;
+  };
+
+  function log_stop() {
+    doc		"Stop logging";
+
+    codel mv_log_stop(out log);
+  };*/
+};

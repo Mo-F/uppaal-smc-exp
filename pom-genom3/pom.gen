@@ -1,0 +1,191 @@
+/*/
+ * Copyright (c) 2015-2017 LAAS/CNRS
+ * All rights reserved.
+ *
+ * Redistribution and use  in source  and binary  forms,  with or without
+ * modification, are permitted provided that the following conditions are
+ * met:
+ *
+ *   1. Redistributions of  source  code must retain the  above copyright
+ *      notice and this list of conditions.
+ *   2. Redistributions in binary form must reproduce the above copyright
+ *      notice and  this list of  conditions in the  documentation and/or
+ *      other materials provided with the distribution.
+ *
+ *                                      Anthony Mallet on Mon Aug 24 2015
+ */
+#pragma require "openrobots-idl >= 1.1"
+
+#include "or/pose/pose_estimator.gen"
+
+component pom {
+  version		"2.2";
+  email			"openrobots@laas.fr";
+  lang			"c";
+  require		"genom3 >= 2.99.26";
+  codels-require	"eigen3";
+
+  provides		or_pose_estimator;
+
+  port multiple in	or_pose_estimator::state measure;
+  port multiple in      or_pose_estimator::state bodies;
+  port multiple out	or_pose_estimator::state state;
+
+  const double period_ms = 1;
+
+  exception e_sys { short code; string<128> what; };
+
+  native context_s;
+  native log_s;
+
+  struct portinfo_s {
+    string<128> name;
+    or::time::ts last;
+  };
+
+  /* --- ids --------------------------------------------------------------- */
+
+  ids {
+    context_s context;
+    unsigned short history_length;
+
+    sequence<or_pose_estimator::state> measurements;
+    sequence<portinfo_s> ports;
+
+    /* frame offset */
+    struct offset_s {
+      double p[3], q[4];
+    } offset;
+
+    /* filter parameters */
+    double max_jerk, max_dw;
+
+    /* logging */
+    log_s log_state, log_measurements;
+  };
+/*
+  attribute get_history_length(out history_length);
+  attribute set_history_length(in history_length);
+
+  attribute get_process_noise(
+    out max_jerk = : "Maximum jerk",
+    out max_dw = : "Maximum angular acceleration");
+  attribute set_process_noise(
+    in max_jerk = 200. : "Maximum jerk",
+    in max_dw = 50. : "Maximum angular acceleration") {
+    validate set_process_noise(local in max_jerk, local in max_dw);
+  };*/
+
+  /* --- io ---------------------------------------------------------------- */
+
+  task io {
+    period period_ms ms;
+
+    codel<start> pom_io_start(inout ::ids)
+      yield read wcet 0.01 ms;
+    async codel<read> pom_io_read(in measure, inout ports, out measurements)
+      yield pause::read, insert wcet 0.01 ms;
+    codel<insert> pom_io_insert(inout measurements, inout context,
+                                in history_length, inout log_measurements)
+      yield pause::read wcet 0.01 ms;
+
+   /* codel<stop> pom_io_stop(inout ::ids)
+      yield ether;*/
+
+    throw e_sys;
+  };
+/*
+  activity
+  add_measurement(in string<128> port = :"Input port name")
+  {
+    doc "Add a measurement source";
+    task io;
+
+    codel<start> pom_add_measurement(in port, inout ports, inout measurements)
+      yield ether wcet 0.01 ms;
+
+    throw e_sys;
+  };
+
+  activity
+  replay(in string<128> path = "pom-measurements.log": "Log file name")
+  {
+    doc "Replay a measurement log file";
+    task io;
+
+    codel<start> pom_replay_start(in path)
+      yield read, ether;
+    async codel<read> pom_replay_read(out measurements)
+      yield insert, stop;
+    codel<insert> pom_io_insert(inout measurements, inout context,
+                                in history_length, inout log_measurements)
+      yield pause::read;
+
+    codel<stop> pom_replay_stop()
+      yield ether;
+
+    interrupt replay;
+    throw e_sys;
+  };
+
+  function
+  set_position(
+    in double x, in double y, in double z,
+    in double roll, in double pitch, in double yaw) {
+    doc		"Set the current position";
+
+    codel pom_set_position(in x, in y, in z, in roll, in pitch, in yaw,
+                           in context, out offset);
+  };*/
+
+
+  /* --- filter ------------------------------------------------------------ */
+
+  task filter {
+    period period_ms ms;
+
+    codel<start> pom_filter_start(out context, out state) yield exec wcet 0.05 ms;
+    codel<exec> pom_filter_exec(inout context, in offset, inout log_state,
+                                out state)
+      yield pause::exec wcet 0.6 ms;
+
+    throw e_sys;
+  };
+
+
+  /* --- logging ----------------------------------------------------------- */
+
+ /* function log_state(in string<64> path = "/tmp/pom.log": "Log file name",
+                     in unsigned long decimation = 1:
+                     "Reduced logging frequency") {
+    doc		"Log state";
+
+    codel pom_log_state(in path, in decimation, inout log_state);
+
+    throw e_sys;
+  };
+
+  function log_measurements(
+    in string<64> path = "/tmp/pom-measurements.log": "Log file name") {
+    doc		"Log measurements";
+
+    codel pom_log_measurements(in path, inout log_measurements);
+
+    throw e_sys;
+  };
+
+  function log_stop() {
+    doc		"Stop logging";
+
+    codel pom_log_stop(out log_state, out log_measurements);
+  };
+
+  function log_info(out double state_miss = :"Missed log state rate",
+                    out double measurements_miss =
+                    :"Missed log measurements rate") {
+    doc		"Show missed log entries rate";
+
+    codel pom_log_info(in log_state, in log_measurements,
+                       out state_miss, out measurements_miss);
+  };*/
+};

@@ -1,0 +1,5 @@
+#include "mikrokopter-genom3/mikrokopter.gen"
+#include "pom-genom3/pom.gen"
+#include "nhfc-genom3/nhfc.gen"
+#include "maneuver-genom3/maneuver.gen"
+#include "optitrack-genom3/optitrack.gen"

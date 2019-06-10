@@ -1,0 +1,178 @@
+/*/
+ * Copyright (c) 2015-2017 LAAS/CNRS
+ * All rights reserved.
+ *
+ * Redistribution and use  in source  and binary  forms,  with or without
+ * modification, are permitted provided that the following conditions are
+ * met:
+ *
+ *   1. Redistributions of  source  code must retain the  above copyright
+ *      notice and this list of conditions.
+ *   2. Redistributions in binary form must reproduce the above copyright
+ *      notice and  this list of  conditions in the  documentation and/or
+ *      other materials provided with the distribution.
+ *
+ *					Anthony Mallet on Tue Aug 11 2015
+ */
+#pragma require "openrobots-idl >= 1.4"
+
+#include "or/pose/pose_estimator.gen"
+#include "or/robot/rotorcraft.gen"
+
+component nhfc {
+  version		"1.5";
+  email			"openrobots@laas.fr";
+  lang			"c";
+  require		"genom3 >= 2.99.26";
+  codels-require	"eigen3";
+
+  uses		or_rotorcraft, or_pose_estimator;
+
+  port in	or_pose_estimator::state state;
+  port in	or_pose_estimator::state reference;
+
+  exception e_input;
+  exception e_sys { short code; string<128> what; };
+
+  native log_s;
+
+  ids {
+    struct servo_s {
+      struct sat_s { double x, v, ix; } sat;
+      struct gain_s {
+        double Kpxy, Kpz, Kqxy, Kqz, Kvxy, Kvz, Kwxy, Kwz;
+        double Kixy, Kiz;
+      } gain;
+      double mass;
+
+      double vmin, vmax;
+      double fmin, fmax;
+
+      double d;
+      double kf;
+      double c;
+
+      double ramp;
+
+      struct emerg_s {
+        double descent;
+        double dx, dq, dv, dw;
+      } emerg;
+    } servo;
+
+    or_pose_estimator::state desired;
+
+    /* logging */
+    log_s log;
+  };
+/*
+  attribute set_saturation(in servo.sat);
+  attribute set_servo_gain(in servo.gain);
+  attribute set_mass(in servo.mass);
+  attribute set_vlimit(in servo.vmin, in servo.vmax) {
+    validate nhfc_set_vlimit(local in vmin, local in vmax,
+                             inout servo);
+  };
+  attribute set_servo_geom(in servo.d, in servo.kf, in servo.c) {
+    validate nhfc_set_servo_geom(local in kf, inout servo);
+  };
+  attribute set_servo_emerg(in servo.emerg) {
+    validate nhfc_set_servo_emerg(local inout emerg);
+  };
+
+  attribute get_servo_parameters(out servo);
+  attribute get_desired(out desired);*/
+
+  const unsigned short control_period_ms = 1;
+
+  task main {
+    period control_period_ms ms;
+
+    codel<start> nhfc_main_start(out ::ids)
+      yield init wcet 0.03 ms;
+    codel<init> nhfc_main_init(in desired, out rotor_input)
+      yield pause::init, control wcet 0.01 ms;
+    codel<control> nhfc_main_control(in servo, inout desired, in state,
+                                     inout log, out rotor_input)
+      yield pause::control wcet 0.01 ms;
+    /* codel<stop> mk_main_stop(out rotor_input)
+      yield ether; */
+  };
+
+
+  /* --- control ----------------------------------------------------------- */
+
+  activity servo() {
+    doc		"Track a desired position";
+    task	main;
+
+    codel<start> nhfc_servo_main(in reference, out desired)
+      yield ether wcet 0.01 ms;
+
+    throw e_input;
+  };
+/*
+  function set_state(
+    in or::t3d::pos pos =: "Position",
+    in or::t3d::vel vel =: "Velocity",
+    in or::t3d::acc acc =: "Acceleration") {
+    doc		"Set the desired state";
+
+    codel nhfc_set_state(in pos, in vel, in acc, out desired);
+
+    interrupt servo;
+  };
+
+  function set_position(
+    in double x, in double y, in double z, in double yaw) {
+    doc		"Set the desired position";
+
+    codel nhfc_set_position(in x, in y, in z, in yaw, out desired);
+
+    interrupt servo;
+  };
+
+  activity set_current_position() {
+    doc		"Set the desired position";
+    task	main;
+
+    codel<start> nhfc_set_current_position(in state, out desired)
+      yield ether;
+
+    interrupt servo;
+    throw e_input;
+  };
+
+  function stop() {
+    doc		"Stop tracking a desired position";
+
+    codel nhfc_servo_stop(out desired);
+
+    interrupt servo;
+  };*/
+
+
+  /* --- logging ----------------------------------------------------------- */
+
+/*  function log(in string<64> path = "/tmp/nhfc.log": "Log file name",
+               in unsigned long decimation = 1: "Reduced logging frequency") {
+    doc		"Log state";
+
+    codel nhfc_log(in path, in decimation, inout log);
+
+    throw e_sys;
+  };
+
+  function log_stop() {
+    doc		"Stop logging";
+
+    codel nhfc_log_stop(out log);
+  };
+
+  function log_info(out unsigned long miss = :"Missed log entries",
+                    out unsigned long total = :"Total log entries") {
+    doc		"Show missed log entries";
+
+    codel nhfc_log_info(in log, out miss, out total);
+  };*/
+};

@@ -1,0 +1,62 @@
+----------------------------
+1- Repository Contents 
+----------------------------
+
+- The GenoM3 specification of the functional components of the Quadcopter flying at LAAS. There are 5 subfolders, each containing a .gen specification for a component. Some services are commented because they are not used in this application.
+
+- The all.gen file #includes all the .gen specification files.
+
+- The all.proba file contains probabilistic information (occurrences) of non-deterministic transitions, collected from flying the Quadcopter.
+
+- The UPPAAL-SMC (.xta) specification translated automatically from its GenoM3 counterpart. The body of the "client" process is adapted manually according to the application. 
+
+- The query file (.q) for verifying the properties of interest.
+
+
+----------------------------
+2- Requirements
+----------------------------
+
+- To reproduce the experiment (generate the .xta automatically), it is required to have installed:
+
+	- GenoM3: clone from git://redmine.laas.fr/laas/users/felix/genom3-fiacre/genom3-wcet.git
+
+	- GenoM3->UPPAAL-SMC template: clone from git://redmine.laas.fr/laas/users/mfoughal/genom3-to-uppaal.git
+
+	- UPPAAL 4.1.22: available on www.uppaal.org -> downloads
+
+- To load the .xta and verify the properties, make sure UPPAAL 4.1.22 is installed (.xta files do not support probabilistic information in older verions). 
+
+- This artefact has been tested with UPPAAL 4.1.22 on Mac OS High Sierra, Windows 10 and Ubuntu 18.04. If you encounter any issue loading the .xta on any other OS version, please report the bug to UPPAAL developers at bug-uppaal@list.it.uu.se
+ 
+----------------------------
+3- How to
+----------------------------
+
+- GenoM3 to UPPAAL-SMC
+
+	- First, install GenoM3 and the UPPAAL-SMC template using the git links above:
+
+		- Clone the git repository.
+		- Enter the following commands:
+			$ cd genom3-wcet (respect. cd genom3-uppaal)
+			$ autoreconf -vif
+			$ mkdir build && cd build
+			$ ../configure --prefix=/YOUR_INSTALLATION_PATH
+			$ make install
+		- Go to the repository where you cloned the case study and run: genom3 uppaal/model -smc all.proba all.gen
+		- The .xta file will be generated in the model/ repository.
+	- Adapt the "client" behavior according to your needs. Use the client behavior provided in quadcopter.xta (process client) for reproducing the same experiment presented here.
+
+- Verification
+
+	- Load the .xta and .q files using UPPAAL 4.1.22. Tune statistical parameters according to your needs (Options -> Statistical parameters) and you are all set :) 
+	You may tune the value of t (in the client) and observe how the probabilities change accordingly (the base unit is 10E-5 s, that is 100 time units is equal to 1ms).
+
+---------------------------- 
+4- Contact
+----------------------------
+
+Do not hesitate to drop me a line at mfoughal@laas.fr for any questions, inquiries or suggestions.
+
+  

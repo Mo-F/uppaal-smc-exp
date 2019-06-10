@@ -1,0 +1,464 @@
+/*/
+ * Copyright (c) 2015-2017 LAAS/CNRS
+ * All rights reserved.
+ *
+ * Redistribution and use  in source  and binary  forms,  with or without
+ * modification, are permitted provided that the following conditions are
+ * met:
+ *
+ *   1. Redistributions of  source  code must retain the  above copyright
+ *      notice and this list of conditions.
+ *   2. Redistributions in binary form must reproduce the above copyright
+ *      notice and  this list of  conditions in the  documentation and/or
+ *      other materials provided with the distribution.
+ *
+ *					Anthony Mallet on Fri Feb 13 2015
+ */
+#pragma require "openrobots-idl >= 1.4"
+
+#include "or/pose/pose_estimator.gen"
+#include "or/robot/rotorcraft.gen"
+
+component mikrokopter {
+  version		"1.6.1";
+  email			"openrobots@laas.fr";
+  lang			"c";
+  require		"genom3 >= 2.99.30";
+  codels-require	"eigen3";
+
+  doc "Control mikrokopter multi-rotor UAVs.";
+
+  provides	or_rotorcraft;
+  uses		or_pose_estimator;
+
+  exception e_sys { short code; string<128> what; };
+  exception e_baddev { string<256> dev; };
+  exception e_rotor_failure { unsigned short id; };
+  exception e_rotor_not_disabled { unsigned short id; };
+  exception e_started, e_connection, e_range, e_input;
+
+  native conn_s;
+  native log_s;
+
+  port out	or_pose_estimator::state imu {
+    doc "Provides current gyroscopes and accelerometer measurements.";
+    doc "";
+    doc "According to the nature of data, the port is filled with the imu";
+    doc "data timestamp `ts`, `intrinsic` true, no position (`pos` and";
+    doc "`pos_cov` are absent) and linear velocities `vx`, `vy`, `vz` set to";
+    doc "`NaN`. All other elements are always present.";
+  };
+
+
+  /* --- internal state ---------------------------------------------------- */
+
+  ids {
+    /* serial connection */
+    conn_s conn;
+
+    /* data timestamps and transmission rate */
+    struct sensor_time_s {
+      struct ts_s {
+        octet seq;
+        double ts, offset;
+      } imu, motor[or_rotorcraft::max_rotors], battery;
+
+      struct rate_s {
+        double imu, motor, battery;
+      } rate;
+    } sensor_time;
+
+    /* battery data */
+    struct battery_s {
+      double min, max;
+      double level;
+    } battery;
+
+    /* imu calibration & filtering */
+    struct imu_calibration_s {
+      double gscale[9], gbias[3], gstddev[3];
+      double ascale[9], abias[3], astddev[3];
+    } imu_calibration;
+    boolean imu_calibration_updated;
+
+    struct imu_filter_s {
+      boolean enable;
+      double gain, Q;
+    } imu_filter;
+
+    /* rotors data */
+    struct rotor_data_s {
+      or_rotorcraft::rotor_state state[or_rotorcraft::max_rotors];
+      double wd[or_rotorcraft::max_rotors];
+      octet clkrate[or_rotorcraft::max_rotors];
+    } rotor_data;
+
+    /* servo parameters */
+    struct servo_s {
+      double ramp;
+    } servo;
+
+    /* logging */
+    log_s log;
+  };
+
+ /* attribute get_sensor_rate(out sensor_time.rate = {
+      .imu =: "Accelerometer and gyroscopes measurement frequency",
+      .motor =: "Various motor data measurement frequency",
+      .battery =: "Battery level measurement frequency"
+    }) {
+    doc "Get hardware sensor data publishing rate, see <<set_sensor_rate>>.";
+  };
+  attribute set_sensor_rate(in sensor_time.rate = {
+      .imu = 1000.: "Accelerometer and gyroscopes measurement frequency",
+      .motor = 50: "Various motor data measurement frequency",
+      .battery = 1: "Battery level measurement frequency"
+    }) {
+    doc "Set hardware sensor data publishing rate, in _Hz_";
+    doc "";
+    doc "`imu` controls the update frequency of port <<imu>>, while `motor`";
+    doc "and `battery` indirectly control the port <<rotor_measure>>.";
+    doc "";
+    doc "CAUTION: The hardware may not be able to achieve the desired";
+    doc "frequency, especially for `motor` data when many motors are";
+    doc "controlled. In this case, no error will be reported, but the ports";
+    doc "update rate may be lower than expected.";
+
+    validate mk_set_sensor_rate(local in rate, in conn, out sensor_time);
+  };
+
+  attribute get_battery(out battery = {
+      .min =: "Minimum acceptable battery voltage",
+      .max =: "Full battery voltage",
+      .level =: "Current battery voltage"
+    }) {
+    doc "Get current battery voltage and limits.";
+  };
+  attribute set_battery_limits(
+      in battery.min = 14.0 : "Minimum acceptable battery voltage",
+      in battery.max = 16.7 : "Full battery voltage") {
+    doc "Set battery minimum and full voltage";
+    doc "";
+    doc "This controls the computed `energy left` percentage in the "
+      "port <<rotor_measure>>.";
+    validate mk_set_battery_limits(in min, in max);
+
+    throw e_range;
+  };
+
+  attribute get_imu_calibration(out imu_calibration = {
+      .gscale =: "Gyroscopes 3×3 scaling matrix (row major)",
+      .gbias =: "Gyroscopes bias vector",
+      .gstddev =: "Gyroscopes measurement noise",
+      .ascale =: "Accelerometers 3×3 scaling matrix (row major)",
+      .abias =: "Accelerometers bias vector",
+      .astddev =: "Accelerometers measurement noise"
+    }) {
+    doc "Get current gyroscopes and accelerometer calibration data.";
+  };
+  attribute set_imu_calibration(in imu_calibration = {
+      .gscale =: "Gyroscopes 3×3 scaling matrix (row major)",
+      .gbias =: "Gyroscopes bias vector",
+      .gstddev =: "Gyroscopes measurement noise",
+      .ascale =: "Accelerometers 3×3 scaling matrix (row major)",
+      .abias =: "Accelerometers bias vector",
+      .astddev =: "Accelerometers measurement noise"
+    }) {
+    doc "Set current gyroscopes and accelerometer calibration data.";
+    doc "";
+    doc "Calling this service is mandatory after each component start, in";
+    doc "order to obtain precise IMU measurements.";
+    doc "";
+    doc "Input parameters are typically those returned by a call to";
+    doc "<<get_imu_calibration>> after a successful <<calibrate_imu>>";
+    doc "(which see).";
+
+    validate mk_set_imu_calibration(out imu_calibration_updated);
+  };
+
+  attribute get_imu_filter(out imu_filter);
+  attribute set_imu_filter(in imu_filter) {
+    validate mk_set_imu_filter(local in imu_filter);
+  };
+
+  attribute set_ramp(in servo.ramp); */
+
+
+  /* --- tasks ------------------------------------------------------------- */
+
+  const unsigned short control_period_ms = 1;
+
+  task main {
+    period control_period_ms ms;
+
+    codel<start> mk_main_init(out ::ids, in imu)
+      yield main wcet 0.01 ms;
+    codel<main> mk_main_perm(in conn, in battery, in imu_calibration,
+                             in imu_filter, in rotor_data,
+                             inout imu_calibration_updated,
+                             in log, out rotor_measure, out imu)
+      yield pause::main wcet 0.01 ms;
+
+   /* codel<stop> mk_main_stop(inout log)
+      yield ether;*/
+  };
+
+  task comm {
+    codel<start> mk_comm_start(out conn)
+      yield poll wcet 0.01 ms;
+
+    async codel<poll> mk_comm_poll(in conn)
+      yield nodata, recv wcet 10 ms;
+    codel<nodata> mk_comm_nodata(inout conn, inout sensor_time,
+                                 out imu, out battery)
+      yield poll wcet 0.01 ms;
+    codel<recv> mk_comm_recv(inout conn, in imu_calibration, inout sensor_time,
+                             out imu, out rotor_data, out battery)
+      yield poll, recv wcet 0.01 ms;
+
+  /*  codel<stop> mk_comm_stop(inout conn)
+      yield ether;*/
+
+    throw e_sys;
+  };
+
+
+  /* --- hw connection ----------------------------------------------------- */
+/*
+  activity connect(
+    in string<64> serial[2] = {
+      "/dev/ttyUSB0" :"Main serial device",
+      "" :"Optional second serial device"
+    } :"Serial devices",
+    in unsigned long baud = 115200 :"Baud rate") {
+
+    doc		"Connect to the hardware";
+    task	comm;
+
+    codel<start> mk_connect_start(in serial, in baud, inout conn,
+                                  inout sensor_time)
+      yield ether wcet 5 ms;
+
+    throw e_sys, e_baddev;
+    interrupt servo;
+  };
+
+  activity disconnect() {
+    doc		"Disconnect from the hardware";
+    task	comm;
+
+    codel<start> mk_disconnect_start(inout conn)
+      yield ether;
+  };
+
+  activity monitor() {
+    doc		"Monitor connection status";
+    task	comm;
+
+    codel<start, sleep> mk_monitor_check(in conn) yield pause::sleep, ether;
+  };
+
+  function disable_motor(in unsigned short motor) {
+    doc		"Disable checking a motor status when it is disconnected";
+
+    codel mk_disable_motor(in motor, in conn, out rotor_data.state);
+  };
+
+  function enable_motor(in unsigned short motor) {
+    doc		"Disable checking a motor status when it is disconnected";
+
+    codel mk_enable_motor(in motor, in conn, out rotor_data.state);
+  };*/
+
+
+  /* --- calibration ------------------------------------------------------- */
+/*
+  activity calibrate_imu(
+    in double tstill = 2 :"Duration in seconds of standstill positions",
+    in unsigned short nposes = 10 :"Number of different standstill positions") {
+    doc "Calibrate accelerometers and gyroscopes.";
+    doc	"";
+    doc "This service computes the `3×3` scaling matrices and `3D` bias vector";
+    doc "for both gyroscopes and accelerometers so that all data is returned";
+    doc "in a consistent, orthogonal frame of reference. This is done by";
+    doc "implementing the paper '`A robust and easy to implement method for";
+    doc "IMU calibration without external equipments, ICRA 2014`'. It requires";
+    doc "no external sensor and a minimum of 10 static poses spanning the";
+    doc "whole SO(3) space, with moderate motion in between. The standard";
+    doc "deviation of the sensor noise is also estimated.";
+    doc "";
+    doc "The `tstill` parameter controls the time after which a standstill";
+    doc "position is detected (2 seconds is fine), while `nposes` sets the";
+    doc "required number of such standstill positions (minimum 10).";
+    doc "";
+    doc "While running the calibration, a progress indication will be reported";
+    doc "to the standard output of the component. You should first set the";
+    doc "platform in the first standstill orientation, then start the service.";
+    doc "The service will report `stay still` until it has acquired the";
+    doc "first pose, then report `acquired pose 1`. You can then move to the";
+    doc "next standstill orientation, leave it until you read the same";
+    doc "messages again, and so on for all the `nposes` orientations.";
+    doc "";
+    doc "For the calibration to be precise, all the orientations";
+    doc "have to be as different as possible one from each other. Also, when";
+    doc "moving from one orientation to another, try to perform a motion such";
+    doc "that the angular velocities on all 3 axis are not zero.";
+    doc "";
+    doc "If you don't read `stay still` after moving to a new";
+    doc "pose, this means that the platform may be vibrating or slightly";
+    doc "moving, and the standstill detection cannot work. After some time,";
+    doc "the service will eventually abort and also report it on the standard";
+    doc "output.";
+    doc "";
+    doc "Once all orientations have been acquired, the results are set for the";
+    doc "current running instance, and available with <<get_imu_calibration>>.";
+    doc "Make sure to save the results somewhere before stopping the";
+    doc "component, so that you can load them with";
+    doc "<<set_imu_calibration>> when you later restart.";
+    doc "";
+    doc "CAUTION: This procedure does not set any particular vertical axis";
+    doc "and the IMU will typically end up calibrated but not aligned with the";
+    doc "gravity. Use <<set_zero>> (after calibration) to align the IMU.";
+
+    task	main;
+
+    codel<start> mk_calibrate_imu_start(in tstill, in nposes)
+      yield collect;
+    codel<collect> mk_calibrate_imu_collect(in imu)
+      yield pause::collect, main;
+    codel<main> mk_calibrate_imu_main(out imu_calibration,
+                                      out imu_calibration_updated)
+      yield ether;
+
+    throw e_sys, e_connection;
+
+    interrupt calibrate_imu, set_zero;
+  };
+
+  activity set_zero() {
+    doc "Align IMU frame with the gravity vector and reset gyroscopes bias.";
+    doc "";
+    doc "This service updates the `3×3` scaling matrices and `3D` bias vector";
+    doc "for both gyroscopes and accelerometers so that the current";
+    doc "accelerometer measurements are only on the Z axis and the gyroscopes";
+    doc "return a 0 angular velocity on each axis.";
+    doc "";
+    doc "While running this service, the platform should be perfectly";
+    doc "standstill and in a horizontal configuration (i.e. it's roll and";
+    doc "pitch angles are considered zero).";
+    doc "";
+    doc "After completion, the current calibration results are updated and";
+    doc "can be retrieved with <<get_imu_calibration>>.";
+    doc "";
+    doc "This service should be called quite often, as the gyroscopes bias";
+    doc "are much dependent on the temperature, so it is important to";
+    doc "estimate them well.";
+
+    task	main;
+
+    local double accum[3], gycum[3];
+    local unsigned long n;
+
+    codel<start> mk_set_zero_start(out accum, out gycum, out n)
+      yield collect;
+    codel<collect> mk_set_zero_collect(in imu, inout accum, inout gycum,
+                                       inout n)
+      yield pause::collect, main;
+    codel<main> mk_set_zero(inout accum, inout gycum,
+                            out imu_calibration, out imu_calibration_updated)
+      yield ether;
+
+    throw e_sys;
+
+    interrupt calibrate_imu, set_zero;
+  };*/
+
+
+  /* --- flight ------------------------------------------------------------ */
+
+  activity start() {
+    doc		"Spin propellers at the lowest velocity";
+    task	main;
+
+    local unsigned short state;
+
+    codel<start> mk_start_start(in conn, out state,
+                                in rotor_data.state::rotor_state)
+      yield /*pause::start,*/ monitor wcet 0.01 ms;
+    codel<monitor> mk_start_monitor(in conn, inout state,
+                                    in rotor_data.state::rotor_state)
+      yield /*pause::monitor,*/ ether wcet 0.01 ms;
+    codel<stop> mk_start_stop(in conn, in rotor_data.state::rotor_state)
+      yield /*pause::stop,*/ ether wcet 0.01 ms;
+
+    interrupt start;
+    throw e_connection, e_started, e_rotor_failure, e_rotor_not_disabled;
+  };
+
+  activity servo() {
+    doc		"Control the propellers according to the given velocities";
+    task	main;
+
+    local double scale;
+
+    codel<start> mk_servo_start(out scale)
+      yield main wcet 0.01 ms;
+    codel<main> mk_servo_main(in conn, inout rotor_data,
+                              in rotor_input, in servo, inout scale)
+      yield /*pause::main,*/ stop wcet 0.01 ms;
+
+    codel<stop> mk_servo_stop(in conn)
+      yield ether wcet 0.01 ms;
+
+    throw e_connection, e_rotor_failure, e_input;
+  };
+/*
+  function set_velocity(
+       in or_rotorcraft::rotor_control desired =: "Propeller velocities") {
+    doc		"Set the given propeller velocity, once";
+
+    validate mk_validate_input(in rotor_data.state, inout desired);
+    codel mk_set_velocity(in conn, inout rotor_data, in desired);
+
+    interrupt servo;
+    throw e_connection, e_rotor_failure;
+  };
+
+  function set_throttle(
+       in or_rotorcraft::rotor_control desired =: "Propeller throttles") {
+    doc		"Set the given propeller voltage";
+
+    validate mk_validate_input(in rotor_data.state, inout desired);
+    codel mk_set_throttle(in conn, inout rotor_data, in desired);
+
+    interrupt servo;
+    throw e_connection, e_rotor_failure;
+  };
+
+  activity stop() {
+    doc		"Stop all propellers";
+    task	main;
+
+    codel<start> mk_stop(in conn, in rotor_data.state)
+      yield pause::start, ether;
+
+    interrupt servo, start;
+  };*/
+
+
+  /* --- logging ----------------------------------------------------------- */
+
+  /* function log(in string<64> path = "/tmp/mikrokopter.log": "Log file name") {
+    doc		"Log IMU and commanded wrench";
+
+    codel mk_log_start(in path, inout log);
+
+    throw e_sys;
+  };
+
+  function log_stop() {
+    doc		"Stop logging";
+
+    codel mk_log_stop(out log);
+  };*/
+};
